@@ -1,16 +1,20 @@
 FROM python:3.11-slim
 
-# Argomento build-time per gestire la versione
-ARG LITELLM_VERSION=1.79.1-stable
+# 1. Usa SOLO i numeri. Niente "-stable".
+# 2. Usa una versione che esiste davvero (attualmente siamo alla 1.52.10)
+ARG LITELLM_VERSION=1.52.10
 
-# Installiamo git e dipendenze di sistema minime
+# Installiamo git e dipendenze sistema
 RUN apt-get update && apt-get install -y --no-install-recommends \
     git build-essential curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Installiamo LiteLLM
+# Aggiorniamo pip per sicurezza (a volte risolve problemi di visibilità versioni)
+RUN pip install --upgrade pip
+
+# Installiamo LiteLLM pulito
 RUN pip install --no-cache-dir "litellm[proxy]==${LITELLM_VERSION}"
 
-# Entrypoint standard
+# Entrypoint
 ENTRYPOINT ["litellm"]
 CMD ["--port", "4000", "--host", "0.0.0.0", "--config", "/config/config.yaml"]
