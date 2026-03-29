@@ -11,7 +11,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # Aggiorniamo pip e installiamo LiteLLM con dipendenze SOCKS in un unico layer
 RUN pip install --no-cache-dir --upgrade pip && \
-    pip install --no-cache-dir "litellm[proxy]==${LITELLM_VERSION}" socksio "httpx[socks]"
+    pip install --no-cache-dir "litellm[proxy]==${LITELLM_VERSION}" socksio "httpx[socks]" prometheus_client langfuse
 
 # Entrypoint
 ENTRYPOINT ["litellm"]

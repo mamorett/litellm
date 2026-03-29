@@ -33,7 +33,7 @@ mkdir config
 touch config/config.yaml
 ```
 
-Add your model and API key details to `config/config.yaml`. Here is a basic example using OpenAI:
+Add your model and API key details to `config/config.yaml`. Here is a basic example using OpenAI with Prometheus and Langfuse enabled:
 
 ```yaml
 # config/config.yaml
@@ -47,17 +47,22 @@ model_list:
 litellm_settings:
   # Set to 'DEBUG' for verbose logging
   set_verbose: True
+  # Enable Prometheus and Langfuse callbacks
+  callbacks: ["prometheus", "langfuse"]
 ```
 
 ### 2. Run the Docker Container
 
-Run the container using the image from the GitHub Container Registry. This command maps port `4000` on your local machine to the container and mounts your configuration file.
+Run the container using the image from the GitHub Container Registry. This command maps port `4000` on your local machine to the container and mounts your configuration file. Don't forget to provide the Langfuse environment variables if you are using it.
 
 ```bash
 docker run -d \
   --name litellm-proxy \
   -p 4000:4000 \
   -v $(pwd)/config:/config \
+  -e LANGFUSE_PUBLIC_KEY="pk-lf-..." \
+  -e LANGFUSE_SECRET_KEY="sk-lf-..." \
+  -e LANGFUSE_HOST="https://cloud.langfuse.com" \
   ghcr.io/gorgon/dev/litellm:latest
 ```
 
