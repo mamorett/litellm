@@ -9,12 +9,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     git build-essential curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Aggiorniamo pip per sicurezza (a volte risolve problemi di visibilità versioni)
-RUN pip install --upgrade pip
-
-# Installiamo LiteLLM pulito
-RUN pip install --no-cache-dir "litellm[proxy]==${LITELLM_VERSION}"
-RUN pip install --no-cache-dir "socksio httpx[socks]"
+# Aggiorniamo pip e installiamo LiteLLM con dipendenze SOCKS in un unico layer
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir "litellm[proxy]==${LITELLM_VERSION}" socksio "httpx[socks]"
 
 # Entrypoint
 ENTRYPOINT ["litellm"]
