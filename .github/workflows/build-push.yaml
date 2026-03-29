@@ -2,6 +2,8 @@ name: Build & Publish LiteLLM Custom
 
 on:
   push:
+    branches:
+      - main
     tags:
       - 'v*' # Scatta solo quando pushi un tag tipo v1.0, v1.1, ecc.
 
@@ -36,17 +38,25 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # 4. Gestione intelligente dei tag (latest + versione)
+      # 4. Estrazione versione da Dockerfile
+      - name: Extract version from Dockerfile
+        id: get_version
+        run: |
+          VERSION=$(grep "ARG LITELLM_VERSION=" Dockerfile | cut -d'=' -f2)
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+
+      # 5. Gestione intelligente dei tag (latest + versione estratta)
       - name: Extract metadata (tags, labels)
         id: meta
         uses: docker/metadata-action@v5
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
+            type=raw,value=${{ steps.get_version.outputs.version }}
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
             type=ref,event=tag
-            type=raw,value=latest
 
-      # 5. Build & Push Multi-Platform
+      # 6. Build & Push Multi-Platform
       - name: Build and push Docker image
         uses: docker/build-push-action@v5
         with:
@@ -56,6 +66,6 @@ jobs:
           platforms: linux/amd64,linux/arm64
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          # Opzionale: passa la versione come build-arg se vuoi sovrascriverla dinamicamente
-          # build-args: |
-          #   LITELLM_VERSION=1.52.10
+          # Passiamo la versione come build-arg per sicurezza
+          build-args: |
+            LITELLM_VERSION=${{ steps.get_version.outputs.version }}
