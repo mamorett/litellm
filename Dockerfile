@@ -1,8 +1,8 @@
 FROM python:3.11-slim
 
 # 1. Usa SOLO i numeri. Niente "-stable".
-# 2. Usa una versione che esiste davvero (attualmente siamo alla 1.52.10)
-ARG LITELLM_VERSION=1.52.10
+# 2. Usa una versione che esiste davvero (attualmente siamo alla 1.82.3)
+ARG LITELLM_VERSION=1.82.3
 
 # Installiamo git e dipendenze sistema
 RUN apt-get update && apt-get install -y --no-install-recommends \
