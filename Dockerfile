@@ -14,6 +14,7 @@ RUN pip install --upgrade pip
 
 # Installiamo LiteLLM pulito
 RUN pip install --no-cache-dir "litellm[proxy]==${LITELLM_VERSION}"
+RUN pip install --no-cache-dir "socksio httpx[socks]"
 
 # Entrypoint
 ENTRYPOINT ["litellm"]
