@@ -34,9 +34,10 @@ RUN chmod +x /app/entrypoint.sh
 
 # Variabili d'ambiente di default (sovrascrivibili a runtime)
 ENV SPARK_URL="http://host.docker.internal:8000/v1/models" \
-    VIRTUAL_MODEL_NAME="trithemius/artemis" \
+    VIRTUAL_MODEL_NAME="custom/model" \
     LITELLM_CONFIG_PATH="/config/config.yaml" \
-    POLL_INTERVAL=10
+    POLL_INTERVAL=10 \
+    DISABLE_DISCOVERY="false"
 
 # Usiamo lo script come entrypoint
 ENTRYPOINT ["/app/entrypoint.sh"]
