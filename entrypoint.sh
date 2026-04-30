@@ -1,7 +1,8 @@
 #!/bin/bash
-# entrypoint.sh — Avvia discovery + LiteLLM in modo robusto
-# Il discovery gira in background; LiteLLM diventa PID 1 via exec.
-# Se il discovery muore inaspettatamente, viene riavviato.
+# entrypoint.sh — Avvia discovery + LiteLLM in modo robusto.
+# LiteLLM non viene MAI bloccato dal backend non disponibile:
+# se il backend è giù al boot, si usa un config di fallback
+# e il discovery aggiornerà il modello appena torna online.
 
 set -euo pipefail
 
@@ -9,15 +10,9 @@ log() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] [Entrypoint] $*"
 }
 
-# ---------------------------------------------------------------------------
-# Assicurati che la directory del config esista
-# ---------------------------------------------------------------------------
 CONFIG_DIR=$(dirname "$LITELLM_CONFIG_PATH")
 mkdir -p "$CONFIG_DIR"
 
-# ---------------------------------------------------------------------------
-# Se discovery è disabilitato, avvia direttamente LiteLLM
-# ---------------------------------------------------------------------------
 if [ "${DISABLE_DISCOVERY:-false}" = "true" ]; then
     log "Discovery disabilitato (DISABLE_DISCOVERY=true)."
     if [ ! -f "$LITELLM_CONFIG_PATH" ]; then
@@ -27,9 +22,6 @@ if [ "${DISABLE_DISCOVERY:-false}" = "true" ]; then
     exec litellm --config "$LITELLM_CONFIG_PATH" --port 4000 --host 0.0.0.0
 fi
 
-# ---------------------------------------------------------------------------
-# Funzione per avviare il discovery in background e salvare il PID
-# ---------------------------------------------------------------------------
 DISCOVERY_PID=""
 
 start_discovery() {
@@ -38,9 +30,6 @@ start_discovery() {
     log "Discovery avviato (PID=$DISCOVERY_PID)"
 }
 
-# ---------------------------------------------------------------------------
-# Cleanup: ferma il discovery quando l'entrypoint esce
-# ---------------------------------------------------------------------------
 cleanup() {
     log "Segnale di arresto ricevuto."
     if [ -n "$DISCOVERY_PID" ] && kill -0 "$DISCOVERY_PID" 2>/dev/null; then
@@ -52,64 +41,75 @@ cleanup() {
 }
 trap cleanup EXIT TERM INT
 
-# ---------------------------------------------------------------------------
-# Avvia il discovery
-# ---------------------------------------------------------------------------
 log "Avvio script di discovery..."
 start_discovery
 
 # ---------------------------------------------------------------------------
-# Aspetta che il config venga generato (max BOOT_TIMEOUT secondi)
+# Assicurati che esista un config prima di avviare LiteLLM.
+#
+# 1. Config già esistente (avvio precedente) → usalo subito.
+# 2. Discovery genera il config entro BOOT_TIMEOUT → ottimo.
+# 3. Timeout scaduto → config di fallback, LiteLLM parte comunque.
+#    Il discovery aggiornerà il modello via API appena il backend torna su.
+#    Niente più restart loop per backend temporaneamente giù.
 # ---------------------------------------------------------------------------
 BOOT_TIMEOUT="${BOOT_TIMEOUT:-60}"
-log "In attesa del primo config ($LITELLM_CONFIG_PATH), timeout=${BOOT_TIMEOUT}s..."
 
-elapsed=0
-while [ ! -f "$LITELLM_CONFIG_PATH" ]; do
-    sleep 1
-    elapsed=$((elapsed + 1))
+if [ -f "$LITELLM_CONFIG_PATH" ]; then
+    log "Config esistente trovato, avvio immediato di LiteLLM."
+else
+    log "Nessun config trovato. Attendo il discovery (max ${BOOT_TIMEOUT}s)..."
+    elapsed=0
+    while [ ! -f "$LITELLM_CONFIG_PATH" ]; do
+        sleep 1
+        elapsed=$((elapsed + 1))
 
-    # Controlla che il discovery sia ancora vivo
-    if ! kill -0 "$DISCOVERY_PID" 2>/dev/null; then
-        log "ERRORE: Il discovery è morto prima di generare il config. Uscita."
-        exit 1
-    fi
+        if ! kill -0 "$DISCOVERY_PID" 2>/dev/null; then
+            log "WARN: Il discovery è morto prematuramente, lo riavvio..."
+            start_discovery
+        fi
 
-    if [ "$elapsed" -ge "$BOOT_TIMEOUT" ]; then
-        log "ERRORE: Timeout di ${BOOT_TIMEOUT}s raggiunto senza config. Il backend è raggiungibile?"
-        log "  SPARK_URL=$SPARK_URL"
-        exit 1
-    fi
-done
+        if [ "$elapsed" -ge "$BOOT_TIMEOUT" ]; then
+            log "WARN: Backend non raggiungibile dopo ${BOOT_TIMEOUT}s."
+            log "Scrivo config di fallback — LiteLLM parte comunque."
+            FALLBACK_API_BASE="${SPARK_URL%/models}"
+            cat > "$LITELLM_CONFIG_PATH" <<EOF
+model_list:
+  - model_name: ${VIRTUAL_MODEL_NAME}
+    litellm_params:
+      model: openai/placeholder
+      api_base: ${FALLBACK_API_BASE}
+      api_key: ${LITELLM_API_KEY:-ollama}
+litellm_settings:
+  drop_params: true
+  num_retries: 1
+  request_timeout: 30
+  success_callback:
+    - langfuse
+  failure_callback:
+    - langfuse
+EOF
+            log "Config di fallback scritto. Il discovery sostituirà 'placeholder' appena il backend torna online."
+            break
+        fi
+    done
+fi
 
-log "Config trovato dopo ${elapsed}s."
+log "Config pronto, avvio LiteLLM Proxy (porta 4000)..."
 
-# ---------------------------------------------------------------------------
-# Avvia LiteLLM
-# Usiamo un wrapper invece di 'exec' diretto così il trap EXIT viene eseguito
-# quando LiteLLM termina, garantendo la pulizia del discovery.
-# ---------------------------------------------------------------------------
-log "Avvio LiteLLM Proxy (porta 4000)..."
-
-# Avvia LiteLLM in foreground ma NON con exec, così il trap funziona
 litellm --config "$LITELLM_CONFIG_PATH" --port 4000 --host 0.0.0.0 &
 LITELLM_PID=$!
 log "LiteLLM avviato (PID=$LITELLM_PID)"
 
-# ---------------------------------------------------------------------------
-# Watchdog: monitora entrambi i processi
-# Se uno muore, ferma l'altro e esci con errore
-# ---------------------------------------------------------------------------
+# Watchdog: LiteLLM muore → exit; Discovery muore → riavvia
 while true; do
     sleep 5
 
-    # Controlla LiteLLM
     if ! kill -0 "$LITELLM_PID" 2>/dev/null; then
-        log "ERRORE: LiteLLM (PID=$LITELLM_PID) è morto inaspettatamente."
+        log "ERRORE: LiteLLM (PID=$LITELLM_PID) è morto inaspettatamente. Uscita."
         exit 1
     fi
 
-    # Controlla discovery — se muore, riavvialo
     if ! kill -0 "$DISCOVERY_PID" 2>/dev/null; then
         log "WARN: Discovery (PID=$DISCOVERY_PID) è morto. Riavvio..."
         start_discovery
