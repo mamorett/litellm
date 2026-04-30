@@ -73,7 +73,8 @@ def _build_config(real_model_name: str) -> dict:
             "failure_callback": ["langfuse"],
             "drop_params": True,
             "num_retries": 1,
-            "request_timeout": 30,
+            "request_timeout": 600,
+            "stream_timeout": 600,
         },
     }
 

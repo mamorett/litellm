@@ -83,7 +83,7 @@ model_list:
 litellm_settings:
   drop_params: true
   num_retries: 1
-  request_timeout: 30
+  request_timeout: 600
   success_callback:
     - langfuse
   failure_callback:
