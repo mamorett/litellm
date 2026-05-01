@@ -90,6 +90,9 @@ def _build_config(real_model_name: str) -> dict:
                     "model": f"openai/{real_model_name}",
                     "api_base": API_BASE,
                     "api_key": BACKEND_API_KEY,
+                    "metadata": {
+                        "langfuse/model": real_model_name
+                    }
                 },
                 "model_info": {
                     "base_model": real_model_name,
@@ -246,6 +249,9 @@ def update_model_live(new_real_model: str) -> bool:
             "model": f"openai/{new_real_model}",
             "api_base": API_BASE,
             "api_key": BACKEND_API_KEY,
+            "metadata": {
+                "langfuse/model": new_real_model
+            }
         },
         "model_info": {
             "base_model": new_real_model,
