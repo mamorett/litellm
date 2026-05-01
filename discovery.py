@@ -61,8 +61,8 @@ class _NoDBError(Exception):
 # ---------------------------------------------------------------------------
 # Metrics
 # ---------------------------------------------------------------------------
-backend_errors  = Counter("discovery_backend_errors_total", "Backend fetch failures")
-live_updates_ok = Counter("discovery_live_updates_ok_total", "Successful live model swaps")
+backend_errors    = Counter("discovery_backend_errors_total", "Backend fetch failures")
+live_updates_ok   = Counter("discovery_live_updates_ok_total", "Successful live model swaps")
 live_updates_fail = Counter("discovery_live_updates_fail_total", "Failed live model swaps")
 current_model_gauge = Gauge("discovery_model_change_timestamp_seconds",
                              "Unix timestamp of last model change")
@@ -79,6 +79,20 @@ def warn(msg):  log("WARN ", msg)
 def error(msg): log("ERROR", msg)
 
 # ---------------------------------------------------------------------------
+# Helper: costruisce i litellm_params con langfuse_model_name top-level
+# ---------------------------------------------------------------------------
+def _litellm_params(real_model_name: str) -> dict:
+    return {
+        "model": f"openai/{real_model_name}",
+        "api_base": API_BASE,
+        "api_key": BACKEND_API_KEY,
+        # langfuse_model_name a top-level (non in metadata) è l'unico modo
+        # affidabile per sovrascrivere il nome nelle tracce Langfuse quando
+        # si usa il proxy standalone.
+        "langfuse_model_name": real_model_name,
+    }
+
+# ---------------------------------------------------------------------------
 # Scrittura atomica del config su disco (usata solo al boot)
 # ---------------------------------------------------------------------------
 def _build_config(real_model_name: str) -> dict:
@@ -86,14 +100,7 @@ def _build_config(real_model_name: str) -> dict:
         "model_list": [
             {
                 "model_name": VIRTUAL_MODEL,
-                "litellm_params": {
-                    "model": f"openai/{real_model_name}",
-                    "api_base": API_BASE,
-                    "api_key": BACKEND_API_KEY,
-                    "metadata": {
-                        "langfuse_model_name": real_model_name
-                    }
-                },
+                "litellm_params": _litellm_params(real_model_name),
                 "model_info": {
                     "base_model": real_model_name,
                 },
@@ -245,14 +252,7 @@ def update_model_live(new_real_model: str) -> bool:
     # 2. Registra il nuovo modello
     payload = {
         "model_name": VIRTUAL_MODEL,
-        "litellm_params": {
-            "model": f"openai/{new_real_model}",
-            "api_base": API_BASE,
-            "api_key": BACKEND_API_KEY,
-            "metadata": {
-                "langfuse_model_name": new_real_model
-            }
-        },
+        "litellm_params": _litellm_params(new_real_model),
         "model_info": {
             "base_model": new_real_model,
         },
