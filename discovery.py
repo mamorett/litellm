@@ -83,13 +83,10 @@ def error(msg): log("ERROR", msg)
 # ---------------------------------------------------------------------------
 def _litellm_params(real_model_name: str) -> dict:
     return {
-        "model": f"openai/{real_model_name}",
+        "model": real_model_name,         # nome puro, senza prefisso openai/
+        "custom_llm_provider": "openai",  # routing verso backend OpenAI-compatibile
         "api_base": API_BASE,
         "api_key": BACKEND_API_KEY,
-        # langfuse_model_name a top-level (non in metadata) è l'unico modo
-        # affidabile per sovrascrivere il nome nelle tracce Langfuse quando
-        # si usa il proxy standalone.
-        "langfuse_model_name": real_model_name,
     }
 
 # ---------------------------------------------------------------------------
@@ -189,7 +186,7 @@ def _verify_model_active(expected_model: str, retries: int = 3) -> bool:
                 for m in r.json().get("data", []):
                     if m.get("model_name") == VIRTUAL_MODEL:
                         actual = m.get("litellm_params", {}).get("model", "")
-                        if actual == f"openai/{expected_model}":
+                        if actual == expected_model:
                             return True
         except Exception:
             pass
