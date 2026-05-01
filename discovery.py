@@ -91,7 +91,7 @@ def _build_config(real_model_name: str) -> dict:
                     "api_base": API_BASE,
                     "api_key": BACKEND_API_KEY,
                     "metadata": {
-                        "langfuse/model": real_model_name
+                        "langfuse_model_name": real_model_name
                     }
                 },
                 "model_info": {
@@ -250,7 +250,7 @@ def update_model_live(new_real_model: str) -> bool:
             "api_base": API_BASE,
             "api_key": BACKEND_API_KEY,
             "metadata": {
-                "langfuse/model": new_real_model
+                "langfuse_model_name": new_real_model
             }
         },
         "model_info": {
