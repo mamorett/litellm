@@ -23,11 +23,19 @@ if [ "${DISABLE_DISCOVERY:-false}" = "true" ]; then
 fi
 
 DISCOVERY_PID=""
+DISCOVERY_RESTARTS=0
+MAX_DISCOVERY_RESTARTS=10
+DISCOVERY_BACKOFF=5
 
 start_discovery() {
+    if [ "$DISCOVERY_RESTARTS" -ge "$MAX_DISCOVERY_RESTARTS" ]; then
+        log "ERROR: Discovery restarted $DISCOVERY_RESTARTS times. Giving up."
+        exit 1
+    fi
+    DISCOVERY_RESTARTS=$((DISCOVERY_RESTARTS + 1))
     python -u /app/discovery.py &
     DISCOVERY_PID=$!
-    log "Discovery avviato (PID=$DISCOVERY_PID)"
+    log "Discovery avviato (PID=$DISCOVERY_PID, restart #$DISCOVERY_RESTARTS)"
 }
 
 cleanup() {
@@ -111,7 +119,10 @@ while true; do
     fi
 
     if ! kill -0 "$DISCOVERY_PID" 2>/dev/null; then
-        log "WARN: Discovery (PID=$DISCOVERY_PID) è morto. Riavvio..."
+        log "WARN: Discovery (PID=$DISCOVERY_PID) è morto. Waiting ${DISCOVERY_BACKOFF}s before restart..."
+        sleep "$DISCOVERY_BACKOFF"
+        DISCOVERY_BACKOFF=$((DISCOVERY_BACKOFF * 2))
+        [ "$DISCOVERY_BACKOFF" -gt 120 ] && DISCOVERY_BACKOFF=120
         start_discovery
     fi
 done
