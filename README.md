@@ -4,15 +4,16 @@ This repository provides a `Dockerfile` and GitHub Actions workflow to build and
 
 This setup is designed for dynamic environments where the backend model might change (e.g., using Ollama or a custom provider that updates its model list) and you want LiteLLM to automatically update its configuration.
 
-[![Build & Publish LiteLLM Custom](https://github.com/gorgon/dev/litellm/actions/workflows/build-push.yaml/badge.svg)](https://github.com/gorgon/dev/litellm/actions/workflows/build-push.yaml)
+[![Build & Publish LiteLLM Custom](https://github.com/mamorett/litellm/actions/workflows/build-push.yaml/badge.svg)](https://github.com/mamorett/litellm/actions/workflows/build-push.yaml)
 
 ## Features
 
 - **Autodiscovery Script:** A background process (`discovery.py`) monitors a backend API and automatically updates the LiteLLM `config.yaml` when a new model is detected.
+- **Production Hardened:** Built-in retry logic, model swap verification, and self-healing for dynamic backends.
+- **Observability:** Prometheus metrics and Docker healthchecks included out-of-the-box.
 - **Unified OpenAI-Compatible API:** Exposes any backend model through a consistent OpenAI API format.
 - **Langfuse Integration:** Pre-configured to support Langfuse for observability and cost tracking.
 - **Multi-Platform Docker Image:** Builds for both `amd64` and `arm64` architectures.
-- **Release-Based Deployment:** Images are only built and pushed to GHCR when a new release is published.
 
 ## Configuration & Environment Variables
 
@@ -25,6 +26,19 @@ The container can be configured using the following environment variables:
 | `LITELLM_CONFIG_PATH` | `/config/config.yaml` | Path where the configuration file will be generated/read. |
 | `POLL_INTERVAL` | `10` | Interval in seconds between discovery polls. |
 | `DISABLE_DISCOVERY` | `false` | Set to `true` to disable the discovery script and use a static config. |
+| `LITELLM_MASTER_KEY` | `""` | Optional master key for LiteLLM admin APIs. |
+
+## Observability
+
+### Prometheus Metrics
+The discovery script exposes metrics on port `9100`:
+- `discovery_backend_errors_total`: Count of failed backend polls.
+- `discovery_live_updates_ok_total`: Successful model hot-swaps.
+- `discovery_live_updates_fail_total`: Failed model hot-swaps (after retries).
+- `discovery_model_change_timestamp_seconds`: Timestamp of the last successful model update.
+
+### Healthcheck
+The container includes a native Docker healthcheck that verifies the LiteLLM proxy readiness every 30 seconds.
 
 ## Operational Modes
 
@@ -36,9 +50,10 @@ In this mode, the container starts a discovery script that polls `SPARK_URL`. It
 docker run -d \
   --name litellm-proxy \
   -p 4000:4000 \
+  -p 9100:9100 \
   -e SPARK_URL="http://your-backend:8000/v1/models" \
   -e VIRTUAL_MODEL_NAME="my-awesome-model" \
-  ghcr.io/gorgon/dev/litellm:latest
+  ghcr.io/mamorett/litellm:latest
 ```
 
 ### 2. Static Mode (Discovery Disabled)
