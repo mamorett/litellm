@@ -107,6 +107,7 @@ log "Config pronto, avvio LiteLLM Proxy (porta 4000)..."
 
 litellm --config "$LITELLM_CONFIG_PATH" --port 4000 --host 0.0.0.0 &
 LITELLM_PID=$!
+echo "$LITELLM_PID" > /tmp/litellm.pid
 log "LiteLLM avviato (PID=$LITELLM_PID)"
 
 # Watchdog: LiteLLM muore → exit; Discovery muore → riavvia
@@ -114,8 +115,17 @@ while true; do
     sleep 5
 
     if ! kill -0 "$LITELLM_PID" 2>/dev/null; then
-        log "ERRORE: LiteLLM (PID=$LITELLM_PID) è morto inaspettatamente. Uscita."
-        exit 1
+        if [ -f /tmp/litellm.restart-requested ]; then
+            log "INFO: Restart controllato di LiteLLM richiesto dal discovery (cambio modello)."
+            rm -f /tmp/litellm.restart-requested
+            litellm --config "$LITELLM_CONFIG_PATH" --port 4000 --host 0.0.0.0 &
+            LITELLM_PID=$!
+            echo "$LITELLM_PID" > /tmp/litellm.pid
+            log "LiteLLM riavviato con config aggiornato (PID=$LITELLM_PID)"
+        else
+            log "ERRORE: LiteLLM (PID=$LITELLM_PID) è morto inaspettatamente. Uscita."
+            exit 1
+        fi
     fi
 
     if ! kill -0 "$DISCOVERY_PID" 2>/dev/null; then

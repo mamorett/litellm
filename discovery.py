@@ -2,8 +2,11 @@
 """
 LiteLLM Auto-Discovery Script
 Monitora un endpoint OpenAI-compatibile e aggiorna il modello in LiteLLM
-a caldo via API admin (DELETE + POST /model) quando il modello cambia.
-Il config su disco viene scritto solo al boot (per il primo avvio).
+quando il modello cambia. Supporta due strategie:
+  1. Live hot-swap via API admin (richiede DB Prisma collegato a LiteLLM).
+  2. Graceful restart: scrive il config su disco e richiede il restart di
+     LiteLLM via file-flag / SIGTERM — usato automaticamente quando le
+     API admin non sono disponibili (nessun DB configurato).
 """
 
 import os
@@ -40,6 +43,20 @@ def _derive_api_base(models_url: str) -> str:
     return parsed._replace(path=base_path, query="", fragment="").geturl()
 
 API_BASE = _derive_api_base(SPARK_URL)
+
+# ---------------------------------------------------------------------------
+# File-based handshake con entrypoint.sh per il restart controllato
+# ---------------------------------------------------------------------------
+_LITELLM_PID_FILE    = "/tmp/litellm.pid"
+_LITELLM_RESTART_FLAG = "/tmp/litellm.restart-requested"
+
+# ---------------------------------------------------------------------------
+# Eccezione permanente: le API admin richiedono un DB che non è configurato.
+# Il decorator @_retry NON deve riprovare su questo errore.
+# ---------------------------------------------------------------------------
+class _NoDBError(Exception):
+    """LiteLLM admin API non disponibile senza database."""
+    pass
 
 # ---------------------------------------------------------------------------
 # Metrics
@@ -169,8 +186,10 @@ def _verify_model_active(expected_model: str, retries: int = 3) -> bool:
         time.sleep(2)
     return False
 
-def _retry(max_attempts: int = 4, base_delay: float = 2.0):
-    """Decorator: retry on exception or False return value."""
+def _retry(max_attempts: int = 4, base_delay: float = 2.0, no_retry_on: tuple = ()):
+    """Decorator: retry on exception or False return value.
+    Exceptions listed in no_retry_on are re-raised immediately without retry.
+    """
     def decorator(fn):
         @wraps(fn)
         def wrapper(*args, **kwargs):
@@ -179,6 +198,9 @@ def _retry(max_attempts: int = 4, base_delay: float = 2.0):
                     result = fn(*args, **kwargs)
                     if result is not False:
                         return result
+                    raise ValueError("returned False")
+                except no_retry_on:
+                    raise  # permanent error — propagate immediately
                 except Exception as e:
                     result = e
                 delay = base_delay * (2 ** (attempt - 1))
@@ -189,13 +211,14 @@ def _retry(max_attempts: int = 4, base_delay: float = 2.0):
         return wrapper
     return decorator
 
-@_retry(max_attempts=4, base_delay=2.0)
+@_retry(max_attempts=4, base_delay=2.0, no_retry_on=(_NoDBError,))
 def update_model_live(new_real_model: str) -> bool:
     """
     Aggiorna il modello in LiteLLM a caldo:
     1. DELETE /model  (rimuove il vecchio)
     2. POST   /model  (aggiunge il nuovo)
     Ritorna True se successo.
+    Lancia _NoDBError se le API admin richiedono un DB non configurato.
     """
     headers = _admin_headers()
 
@@ -235,18 +258,64 @@ def update_model_live(new_real_model: str) -> bool:
             json=payload,
             timeout=5,
         )
-        if r.status_code not in (200, 201):
-            warn(f"POST /model/new ha risposto {r.status_code}: {r.text[:300]}")
+        if r.status_code in (200, 201):
+            pass  # success, continue to verify
+        else:
+            body = r.text
+            # Detect permanently disabled admin API (no DB) — do not retry
+            if r.status_code == 500 and "No DB Connected" in body:
+                raise _NoDBError(
+                    "LiteLLM admin API richiede un database Prisma. "
+                    "Fallback automatico al restart controllato."
+                )
+            warn(f"POST /model/new ha risposto {r.status_code}: {body[:300]}")
             return False
+    except _NoDBError:
+        raise  # let @_retry propagate without retrying
     except Exception as e:
         warn(f"Errore POST /model/new: {e}")
         return False
-        
+
     # 3. Verifica
     if _verify_model_active(new_real_model):
         return True
     else:
         error("Verifica fallita: il modello non risulta aggiornato nel proxy.")
+        return False
+
+
+def _request_litellm_restart() -> bool:
+    """
+    Richiede a entrypoint.sh di riavviare LiteLLM in modo controllato:
+    - Scrive il flag /tmp/litellm.restart-requested
+    - Invia SIGTERM al PID di LiteLLM
+    entrypoint.sh rileva il flag, lo rimuove e riavvia LiteLLM
+    (che leggerà il config aggiornato su disco).
+    """
+    try:
+        with open(_LITELLM_PID_FILE) as f:
+            pid = int(f.read().strip())
+    except Exception as e:
+        error(f"Impossibile leggere il PID di LiteLLM da {_LITELLM_PID_FILE}: {e}")
+        return False
+    try:
+        # Segnala PRIMA il flag, poi il SIGTERM
+        with open(_LITELLM_RESTART_FLAG, "w") as f:
+            f.write("1")
+        os.kill(pid, signal.SIGTERM)
+        info(f"Restart di LiteLLM richiesto (PID={pid}). Il processo si riavvierà con il config aggiornato.")
+        return True
+    except ProcessLookupError:
+        # LiteLLM è già morto — il watchdog lo riavvierà comunque
+        warn(f"LiteLLM (PID={pid}) già terminato. Il watchdog provvederà al riavvio.")
+        return True
+    except Exception as e:
+        error(f"Errore durante la richiesta di restart: {e}")
+        # Rimuovi il flag per evitare restart a catena
+        try:
+            os.unlink(_LITELLM_RESTART_FLAG)
+        except OSError:
+            pass
         return False
 
 # ---------------------------------------------------------------------------
@@ -303,7 +372,9 @@ def main():
     last_model: str | None = None
     consecutive_errors = 0
     litellm_was_ready = False
-    
+    # True = prova le API admin; False = usa il restart controllato
+    admin_api_available = True
+
     disk_config_is_stale = _disk_config_is_placeholder()
     if disk_config_is_stale:
         warn("Config su disco contiene 'placeholder' — verrà riscritto al primo discovery.")
@@ -317,7 +388,7 @@ def main():
             if current_model != last_model or disk_config_is_stale:
                 if current_model != last_model:
                     info(f"Modello cambiato/rilevato: {last_model!r} -> {current_model!r}")
-                
+
                 # Sempre aggiorna il config su disco (serve al prossimo restart)
                 disk_ok = False
                 try:
@@ -332,18 +403,45 @@ def main():
                 if litellm_ready:
                     if not litellm_was_ready:
                         litellm_was_ready = True
-                        info("LiteLLM è online, userò l'API admin per aggiornamenti live.")
-                        
+                        strategy = "API admin" if admin_api_available else "restart controllato"
+                        info(f"LiteLLM è online. Strategia di aggiornamento: {strategy}.")
+
                     if disk_ok:
-                        if update_model_live(current_model):
-                            info(f"✅ Modello aggiornato live: {VIRTUAL_MODEL!r} -> {current_model!r}")
-                            last_model = current_model
-                            live_updates_ok.inc()
-                            current_model_gauge.set(time.time())
+                        if admin_api_available:
+                            try:
+                                ok = update_model_live(current_model)
+                            except _NoDBError as e:
+                                warn(f"API admin non disponibili ({e}). "
+                                     "Passo alla strategia restart controllato per tutti i cicli futuri.")
+                                admin_api_available = False
+                                ok = False
+
+                            if ok:
+                                info(f"✅ Modello aggiornato live: {VIRTUAL_MODEL!r} -> {current_model!r}")
+                                last_model = current_model
+                                live_updates_ok.inc()
+                                current_model_gauge.set(time.time())
+                            elif not admin_api_available:
+                                # Prima volta in modalità restart: eseguiamo subito
+                                if _request_litellm_restart():
+                                    info(f"♻️  Restart richiesto per applicare modello: {current_model!r}")
+                                    last_model = current_model
+                                    live_updates_ok.inc()
+                                    current_model_gauge.set(time.time())
+                                else:
+                                    live_updates_fail.inc()
+                            else:
+                                warn("Aggiornamento live fallito. Verrà ritentato al prossimo ciclo.")
+                                live_updates_fail.inc()
                         else:
-                            warn("Aggiornamento live fallito. Verrà ritentato al prossimo ciclo.")
-                            live_updates_fail.inc()
-                            # Non aggiorniamo last_model così riprova al prossimo ciclo
+                            # Modalità restart controllato (no DB)
+                            if _request_litellm_restart():
+                                info(f"♻️  Restart richiesto per applicare modello: {current_model!r}")
+                                last_model = current_model
+                                live_updates_ok.inc()
+                                current_model_gauge.set(time.time())
+                            else:
+                                live_updates_fail.inc()
                     else:
                         warn("Config non scritto — verrà ritentato al prossimo ciclo.")
                 else:
