@@ -104,8 +104,8 @@ def _build_config(real_model_name: str) -> dict:
             }
         ],
         "litellm_settings": {
-            "success_callback": ["langfuse"],
-            "failure_callback": ["langfuse"],
+            "success_callback": ["langfuse", "prometheus"],
+            "failure_callback": ["langfuse", "prometheus"],     
             "drop_params": True,
             "num_retries": 1,
             "request_timeout": 600,
