@@ -34,7 +34,8 @@ ENV SPARK_URL="http://host.docker.internal:8000/v1/models" \
     LITELLM_API_KEY="ollama" \
     POLL_INTERVAL="10" \
     BOOT_TIMEOUT="60" \
-    DISABLE_DISCOVERY="false"
+    DISABLE_DISCOVERY="false" \
+    DEFAULT_CONTEXT_LENGTH="262144"
 
 EXPOSE 4000
 

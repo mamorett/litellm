@@ -7,6 +7,13 @@ quando il modello cambia. Supporta due strategie:
   2. Graceful restart: scrive il config su disco e richiede il restart di
      LiteLLM via file-flag / SIGTERM — usato automaticamente quando le
      API admin non sono disponibili (nessun DB configurato).
+
+Context length detection (cascata):
+  - vLLM:      campo max_model_len nel record /v1/models
+  - SGLang:    campo context_length nel record /v1/models
+  - llama.cpp: GET /props o /v1/props -> n_ctx
+  - Ollama:    POST /api/show -> model_info.context_length
+  - Fallback:  env DEFAULT_CONTEXT_LENGTH (default 262144)
 """
 
 import os
@@ -33,6 +40,8 @@ BACKEND_API_KEY     = os.getenv("LITELLM_API_KEY", "ollama")
 LITELLM_PROXY_URL   = os.getenv("LITELLM_PROXY_URL", "http://localhost:4000")
 # Master key per le API admin di LiteLLM (opzionale ma consigliata)
 LITELLM_MASTER_KEY  = os.getenv("LITELLM_MASTER_KEY", "")
+# Context length di fallback quando nessun engine la espone
+DEFAULT_CONTEXT     = int(os.getenv("DEFAULT_CONTEXT_LENGTH", "262144"))
 
 def _derive_api_base(models_url: str) -> str:
     """http://host:8000/v1/models  ->  http://host:8000/v1"""
@@ -47,7 +56,7 @@ API_BASE = _derive_api_base(SPARK_URL)
 # ---------------------------------------------------------------------------
 # File-based handshake con entrypoint.sh per il restart controllato
 # ---------------------------------------------------------------------------
-_LITELLM_PID_FILE    = "/tmp/litellm.pid"
+_LITELLM_PID_FILE     = "/tmp/litellm.pid"
 _LITELLM_RESTART_FLAG = "/tmp/litellm.restart-requested"
 
 # ---------------------------------------------------------------------------
@@ -61,11 +70,13 @@ class _NoDBError(Exception):
 # ---------------------------------------------------------------------------
 # Metrics
 # ---------------------------------------------------------------------------
-backend_errors    = Counter("discovery_backend_errors_total", "Backend fetch failures")
-live_updates_ok   = Counter("discovery_live_updates_ok_total", "Successful live model swaps")
-live_updates_fail = Counter("discovery_live_updates_fail_total", "Failed live model swaps")
+backend_errors      = Counter("discovery_backend_errors_total", "Backend fetch failures")
+live_updates_ok     = Counter("discovery_live_updates_ok_total", "Successful live model swaps")
+live_updates_fail   = Counter("discovery_live_updates_fail_total", "Failed live model swaps")
 current_model_gauge = Gauge("discovery_model_change_timestamp_seconds",
-                             "Unix timestamp of last model change")
+                            "Unix timestamp of last model change")
+context_length_gauge = Gauge("discovery_context_length_tokens",
+                             "Detected context length of the current model")
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -77,6 +88,95 @@ def log(level: str, msg: str):
 def info(msg):  log("INFO ", msg)
 def warn(msg):  log("WARN ", msg)
 def error(msg): log("ERROR", msg)
+
+# ---------------------------------------------------------------------------
+# Context length detection — cascata multi-engine
+# ---------------------------------------------------------------------------
+
+def _fetch_context_from_model_record(model_data: dict) -> tuple[int, str] | tuple[None, None]:
+    """
+    Prova i campi noti nel record /v1/models.
+    - vLLM:   max_model_len
+    - SGLang: context_length
+    Ritorna (valore, nome_campo) oppure (None, None).
+    """
+    for field in ("max_model_len", "context_length"):
+        val = model_data.get(field)
+        if val:
+            return int(val), field
+    return None, None
+
+
+def _fetch_context_llamacpp(api_base: str) -> int | None:
+    """
+    llama.cpp (llama-server) espone GET /props o /v1/props con n_ctx.
+    Non fa parte del record /v1/models, quindi richiede una chiamata extra.
+    """
+    for path in ("/props", "/v1/props"):
+        try:
+            r = requests.get(f"{api_base}{path}", timeout=3)
+            if r.status_code == 200:
+                val = r.json().get("n_ctx")
+                if val:
+                    return int(val)
+        except Exception:
+            pass
+    return None
+
+
+def _fetch_context_ollama(api_base: str, model_name: str) -> int | None:
+    """
+    Ollama espone POST /api/show con context_length dentro model_info.
+    L'endpoint è fuori dal path /v1, quindi usiamo la base senza prefisso.
+    """
+    # Risali alla radice del server (prima di /v1)
+    parsed = urlparse(api_base)
+    root = parsed._replace(path="", query="", fragment="").geturl()
+    try:
+        r = requests.post(
+            f"{root}/api/show",
+            json={"name": model_name},
+            timeout=3,
+        )
+        if r.status_code == 200:
+            val = r.json().get("model_info", {}).get("context_length")
+            if val:
+                return int(val)
+    except Exception:
+        pass
+    return None
+
+
+def detect_context_length(model_data: dict, model_id: str) -> int:
+    """
+    Determina la context length del modello corrente con cascata:
+      1. Campo nel record /v1/models (vLLM: max_model_len, SGLang: context_length)
+      2. llama.cpp /props
+      3. Ollama /api/show
+      4. DEFAULT_CONTEXT (da env)
+    Logga sempre da dove proviene il valore.
+    """
+    # 1. Record /v1/models (nessuna request extra)
+    ctx, field = _fetch_context_from_model_record(model_data)
+    if ctx:
+        info(f"Context length rilevata dal record /v1/models (campo '{field}'): {ctx}")
+        return ctx
+
+    # 2. llama.cpp /props
+    ctx = _fetch_context_llamacpp(API_BASE)
+    if ctx:
+        info(f"Context length rilevata via llama.cpp /props (n_ctx): {ctx}")
+        return ctx
+
+    # 3. Ollama /api/show
+    ctx = _fetch_context_ollama(API_BASE, model_id)
+    if ctx:
+        info(f"Context length rilevata via Ollama /api/show: {ctx}")
+        return ctx
+
+    # 4. Fallback
+    warn(f"Context length non rilevata da nessun engine — uso DEFAULT_CONTEXT_LENGTH={DEFAULT_CONTEXT}")
+    return DEFAULT_CONTEXT
 
 # ---------------------------------------------------------------------------
 # Helper: costruisce i litellm_params con langfuse_model_name top-level
@@ -92,7 +192,7 @@ def _litellm_params(real_model_name: str) -> dict:
 # ---------------------------------------------------------------------------
 # Scrittura atomica del config su disco (usata solo al boot)
 # ---------------------------------------------------------------------------
-def _build_config(real_model_name: str) -> dict:
+def _build_config(real_model_name: str, max_ctx: int) -> dict:
     return {
         "model_list": [
             {
@@ -100,12 +200,16 @@ def _build_config(real_model_name: str) -> dict:
                 "litellm_params": _litellm_params(real_model_name),
                 "model_info": {
                     "base_model": real_model_name,
+                    "max_input_tokens": max_ctx,
+                    "max_tokens": max_ctx,
+                    "max_model_len": max_ctx,
+                    "context_window": max_ctx,
                 },
             }
         ],
         "litellm_settings": {
             "success_callback": ["langfuse", "prometheus"],
-            "failure_callback": ["langfuse", "prometheus"],     
+            "failure_callback": ["langfuse", "prometheus"],
             "drop_params": True,
             "num_retries": 1,
             "request_timeout": 600,
@@ -113,8 +217,8 @@ def _build_config(real_model_name: str) -> dict:
         },
     }
 
-def write_config_atomic(real_model_name: str):
-    config = _build_config(real_model_name)
+def write_config_atomic(real_model_name: str, max_ctx: int):
+    config = _build_config(real_model_name, max_ctx)
     config_dir = os.path.dirname(os.path.abspath(CONFIG_PATH))
     os.makedirs(config_dir, exist_ok=True)
     fd, tmp_path = tempfile.mkstemp(dir=config_dir, suffix=".yaml.tmp")
@@ -219,11 +323,11 @@ def _retry(max_attempts: int = 4, base_delay: float = 2.0, no_retry_on: tuple = 
     return decorator
 
 @_retry(max_attempts=4, base_delay=2.0, no_retry_on=(_NoDBError,))
-def update_model_live(new_real_model: str) -> bool:
+def update_model_live(new_real_model: str, max_ctx: int) -> bool:
     """
     Aggiorna il modello in LiteLLM a caldo:
     1. DELETE /model  (rimuove il vecchio)
-    2. POST   /model  (aggiunge il nuovo)
+    2. POST   /model  (aggiunge il nuovo con context length corretta)
     Ritorna True se successo.
     Lancia _NoDBError se le API admin richiedono un DB non configurato.
     """
@@ -246,12 +350,16 @@ def update_model_live(new_real_model: str) -> bool:
     else:
         info("Model ID non trovato nel proxy, salto la DELETE.")
 
-    # 2. Registra il nuovo modello
+    # 2. Registra il nuovo modello con context length
     payload = {
         "model_name": VIRTUAL_MODEL,
         "litellm_params": _litellm_params(new_real_model),
         "model_info": {
             "base_model": new_real_model,
+            "max_input_tokens": max_ctx,
+            "max_tokens": max_ctx,
+            "max_model_len": max_ctx,    # esposto in /v1/models ai client
+            "context_window": max_ctx,   # letto da alcuni client (es. Open WebUI)
         },
     }
     try:
@@ -335,9 +443,10 @@ signal.signal(signal.SIGTERM, _handle_signal)
 signal.signal(signal.SIGINT, _handle_signal)
 
 # ---------------------------------------------------------------------------
-# Fetch modello dal backend Spark/Ollama
+# Fetch modello dal backend (vLLM / SGLang / llama.cpp / Ollama)
+# Ritorna (model_id, context_length) oppure (None, None)
 # ---------------------------------------------------------------------------
-def fetch_current_model() -> str | None:
+def fetch_current_model() -> tuple[str, int] | tuple[None, None]:
     try:
         resp = requests.get(SPARK_URL, timeout=5)
         resp.raise_for_status()
@@ -345,8 +454,11 @@ def fetch_current_model() -> str | None:
         models = data.get("data", [])
         if not models:
             warn("La risposta non contiene modelli.")
-            return None
-        return models[0]["id"]
+            return None, None
+        model_data = models[0]
+        model_id = model_data["id"]
+        ctx = detect_context_length(model_data, model_id)
+        return model_id, ctx
     except requests.exceptions.ConnectionError:
         warn("Backend non raggiungibile (ConnectionError).")
     except requests.exceptions.Timeout:
@@ -355,24 +467,26 @@ def fetch_current_model() -> str | None:
         error(f"Risposta malformata: {e}")
     except Exception as e:
         error(f"Errore inatteso: {e}")
-    return None
+    return None, None
 
 # ---------------------------------------------------------------------------
 # Loop principale
 # ---------------------------------------------------------------------------
 def main():
     info(f"Avvio monitoraggio su {SPARK_URL}")
-    info(f"api_base derivata:  {API_BASE}")
-    info(f"Modello virtuale:   {VIRTUAL_MODEL}")
-    info(f"Config path:        {CONFIG_PATH}")
-    info(f"LiteLLM proxy URL:  {LITELLM_PROXY_URL}")
-    info(f"Poll interval:      {POLL_INTERVAL}s")
+    info(f"api_base derivata:        {API_BASE}")
+    info(f"Modello virtuale:         {VIRTUAL_MODEL}")
+    info(f"Config path:              {CONFIG_PATH}")
+    info(f"LiteLLM proxy URL:        {LITELLM_PROXY_URL}")
+    info(f"Poll interval:            {POLL_INTERVAL}s")
+    info(f"Default context fallback: {DEFAULT_CONTEXT}")
 
     # Start Prometheus metrics server
     start_http_server(9100)
     info("Prometheus metrics esposte sulla porta 9100")
 
     last_model: str | None = None
+    last_ctx: int = 0
     consecutive_errors = 0
     litellm_was_ready = False
     # True = prova le API admin; False = usa il restart controllato
@@ -383,22 +497,28 @@ def main():
         warn("Config su disco contiene 'placeholder' — verrà riscritto al primo discovery.")
 
     while not _shutdown:
-        current_model = fetch_current_model()
+        current_model, current_ctx = fetch_current_model()
 
         if current_model is not None:
             consecutive_errors = 0
 
-            if current_model != last_model or disk_config_is_stale:
-                if current_model != last_model:
-                    info(f"Modello cambiato/rilevato: {last_model!r} -> {current_model!r}")
+            model_changed = current_model != last_model
+            ctx_changed    = current_ctx != last_ctx
+            needs_update   = model_changed or ctx_changed or disk_config_is_stale
+
+            if needs_update:
+                if model_changed:
+                    info(f"Modello cambiato: {last_model!r} -> {current_model!r}")
+                if ctx_changed and last_ctx != 0:
+                    info(f"Context length cambiata: {last_ctx} -> {current_ctx}")
 
                 # Sempre aggiorna il config su disco (serve al prossimo restart)
                 disk_ok = False
                 try:
-                    write_config_atomic(current_model)
+                    write_config_atomic(current_model, current_ctx)
                     disk_ok = True
                     disk_config_is_stale = False
-                    info("Config su disco aggiornato.")
+                    info(f"Config su disco aggiornato (model={current_model!r}, ctx={current_ctx}).")
                 except Exception as e:
                     error(f"Impossibile scrivere il config: {e}")
 
@@ -412,7 +532,7 @@ def main():
                     if disk_ok:
                         if admin_api_available:
                             try:
-                                ok = update_model_live(current_model)
+                                ok = update_model_live(current_model, current_ctx)
                             except _NoDBError as e:
                                 warn(f"API admin non disponibili ({e}). "
                                      "Passo alla strategia restart controllato per tutti i cicli futuri.")
@@ -420,17 +540,21 @@ def main():
                                 ok = False
 
                             if ok:
-                                info(f"✅ Modello aggiornato live: {VIRTUAL_MODEL!r} -> {current_model!r}")
+                                info(f"✅ Modello aggiornato live: {VIRTUAL_MODEL!r} -> {current_model!r} (ctx={current_ctx})")
                                 last_model = current_model
+                                last_ctx   = current_ctx
                                 live_updates_ok.inc()
                                 current_model_gauge.set(time.time())
+                                context_length_gauge.set(current_ctx)
                             elif not admin_api_available:
                                 # Prima volta in modalità restart: eseguiamo subito
                                 if _request_litellm_restart():
-                                    info(f"♻️  Restart richiesto per applicare modello: {current_model!r}")
+                                    info(f"♻  Restart richiesto per applicare modello: {current_model!r} (ctx={current_ctx})")
                                     last_model = current_model
+                                    last_ctx   = current_ctx
                                     live_updates_ok.inc()
                                     current_model_gauge.set(time.time())
+                                    context_length_gauge.set(current_ctx)
                                 else:
                                     live_updates_fail.inc()
                             else:
@@ -439,10 +563,12 @@ def main():
                         else:
                             # Modalità restart controllato (no DB)
                             if _request_litellm_restart():
-                                info(f"♻️  Restart richiesto per applicare modello: {current_model!r}")
+                                info(f"♻  Restart richiesto per applicare modello: {current_model!r} (ctx={current_ctx})")
                                 last_model = current_model
+                                last_ctx   = current_ctx
                                 live_updates_ok.inc()
                                 current_model_gauge.set(time.time())
+                                context_length_gauge.set(current_ctx)
                             else:
                                 live_updates_fail.inc()
                     else:
@@ -451,7 +577,9 @@ def main():
                     info("LiteLLM non ancora online, il modello sarà caricato all'avvio.")
                     if disk_ok:
                         last_model = current_model
+                        last_ctx   = current_ctx
                         current_model_gauge.set(time.time())
+                        context_length_gauge.set(current_ctx)
 
         else:
             consecutive_errors += 1
