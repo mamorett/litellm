@@ -51,8 +51,12 @@ ENABLE_PROMETHEUS_RAW  = os.getenv("ENABLE_PROMETHEUS", "true").strip().lower()
 LANGFUSE_PUBLIC_KEY    = os.getenv("LANGFUSE_PUBLIC_KEY", "").strip()
 LANGFUSE_SECRET_KEY    = os.getenv("LANGFUSE_SECRET_KEY", "").strip()
 # Variabili MLflow (abilitato automaticamente se MLFLOW_TRACKING_URI è impostata)
-MLFLOW_TRACKING_URI    = os.getenv("MLFLOW_TRACKING_URI", "").strip()
-MLFLOW_EXPERIMENT_NAME = os.getenv("MLFLOW_EXPERIMENT_NAME", "").strip()
+MLFLOW_TRACKING_URI          = os.getenv("MLFLOW_TRACKING_URI", "").strip()
+MLFLOW_EXPERIMENT_NAME       = os.getenv("MLFLOW_EXPERIMENT_NAME", "").strip()
+MLFLOW_TRACKING_USERNAME     = os.getenv("MLFLOW_TRACKING_USERNAME", "").strip()
+MLFLOW_TRACKING_PASSWORD     = os.getenv("MLFLOW_TRACKING_PASSWORD", "").strip()
+MLFLOW_TRACKING_TOKEN        = os.getenv("MLFLOW_TRACKING_TOKEN", "").strip()
+MLFLOW_TRACKING_INSECURE_TLS = os.getenv("MLFLOW_TRACKING_INSECURE_TLS", "").strip().lower()
 # Costi opzionali del modello (in USD per 1M token, oppure per singolo token come fallback)
 INPUT_COST_PER_1M_RAW  = os.getenv("INPUT_COST_PER_1M_TOKENS", "").strip()
 OUTPUT_COST_PER_1M_RAW = os.getenv("OUTPUT_COST_PER_1M_TOKENS", "").strip()
@@ -569,7 +573,17 @@ def main():
     info(f"Callbacks attivi:         {_active_callbacks()}")
     if MLFLOW_TRACKING_URI:
         exp_info = f", experiment={MLFLOW_EXPERIMENT_NAME!r}" if MLFLOW_EXPERIMENT_NAME else ""
-        info(f"MLflow abilitato:         uri={MLFLOW_TRACKING_URI!r}{exp_info}")
+        if MLFLOW_TRACKING_TOKEN:
+            auth_info = ", auth=bearer-token"
+        elif MLFLOW_TRACKING_USERNAME and MLFLOW_TRACKING_PASSWORD:
+            auth_info = f", auth=basic(user={MLFLOW_TRACKING_USERNAME!r})"
+        elif MLFLOW_TRACKING_USERNAME or MLFLOW_TRACKING_PASSWORD:
+            auth_info = ", auth=incomplete-basic-credentials"
+            warn("MLflow: MLFLOW_TRACKING_USERNAME e MLFLOW_TRACKING_PASSWORD devono essere entrambi impostati per Basic Auth.")
+        else:
+            auth_info = ", auth=none"
+        tls_info = ", insecure_tls=true" if MLFLOW_TRACKING_INSECURE_TLS in ("true", "1", "yes") else ""
+        info(f"MLflow abilitato:         uri={MLFLOW_TRACKING_URI!r}{exp_info}{auth_info}{tls_info}")
     if INPUT_COST_PER_TOKEN is not None or OUTPUT_COST_PER_TOKEN is not None:
         in_str  = f"${INPUT_COST_PER_TOKEN * 1_000_000:.4f}/1M" if INPUT_COST_PER_TOKEN is not None else "n/a"
         out_str = f"${OUTPUT_COST_PER_TOKEN * 1_000_000:.4f}/1M" if OUTPUT_COST_PER_TOKEN is not None else "n/a"

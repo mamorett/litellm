@@ -35,6 +35,10 @@ The container can be configured using the following environment variables:
 | `ENABLE_PROMETHEUS` | `true` | Enable (`true`) or disable (`false`) Prometheus callback and port `9100` exporter. |
 | `MLFLOW_TRACKING_URI` | `""` | Optional MLflow tracking server URI (e.g. `http://mlflow:5000`). Setting this automatically enables the `mlflow` callback. |
 | `MLFLOW_EXPERIMENT_NAME` | `""` | Optional MLflow experiment name where traces will be logged. |
+| `MLFLOW_TRACKING_USERNAME` | `""` | Optional username for MLflow HTTP Basic Authentication. |
+| `MLFLOW_TRACKING_PASSWORD` | `""` | Optional password for MLflow HTTP Basic Authentication. |
+| `MLFLOW_TRACKING_TOKEN` | `""` | Optional Bearer token for MLflow token-based authentication. |
+| `MLFLOW_TRACKING_INSECURE_TLS` | `""` | Set to `true` to skip TLS certificate verification for self-signed MLflow servers. |
 | `INPUT_COST_PER_1M_TOKENS` | `""` | Optional cost in USD per 1M input tokens (e.g. `0.50`). |
 | `OUTPUT_COST_PER_1M_TOKENS` | `""` | Optional cost in USD per 1M output tokens (e.g. `1.50`). |
 | `INPUT_COST_PER_TOKEN` | `""` | Optional fallback cost in USD per single input token. |
@@ -97,7 +101,7 @@ docker run -d \
 ```
 
 ### MLflow & Custom Model Costs
-Setting `MLFLOW_TRACKING_URI` automatically activates the `mlflow` callback in LiteLLM. You can also specify optional input/output token costs (per 1M tokens) so that LiteLLM calculates request costs and reports them to MLflow, Langfuse, and Prometheus:
+Setting `MLFLOW_TRACKING_URI` automatically activates the `mlflow` callback in LiteLLM. You can authenticate using HTTP Basic Auth (`MLFLOW_TRACKING_USERNAME` / `MLFLOW_TRACKING_PASSWORD`) or a Bearer token (`MLFLOW_TRACKING_TOKEN`), and optionally specify input/output token costs (per 1M tokens) so that LiteLLM calculates request costs and reports them to MLflow, Langfuse, and Prometheus:
 
 ```bash
 docker run -d \
@@ -107,6 +111,8 @@ docker run -d \
   -e VIRTUAL_MODEL_NAME="my-awesome-model" \
   -e MLFLOW_TRACKING_URI="http://your-mlflow-server:5000" \
   -e MLFLOW_EXPERIMENT_NAME="LiteLLM-Traces" \
+  -e MLFLOW_TRACKING_USERNAME="admin" \
+  -e MLFLOW_TRACKING_PASSWORD="your-password" \
   -e INPUT_COST_PER_1M_TOKENS="0.50" \
   -e OUTPUT_COST_PER_1M_TOKENS="1.50" \
   ghcr.io/mamorett/litellm:latest
