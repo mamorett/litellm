@@ -12,7 +12,8 @@ This setup is designed for dynamic environments where the backend model might ch
 - **Production Hardened:** Built-in retry logic, model swap verification, and self-healing for dynamic backends.
 - **Observability:** Prometheus metrics and Docker healthchecks included out-of-the-box.
 - **Unified OpenAI-Compatible API:** Exposes any backend model through a consistent OpenAI API format.
-- **Langfuse Integration:** Pre-configured to support Langfuse for observability and cost tracking.
+- **Modular Observability (Langfuse, MLflow, Prometheus):** All three integrations are optional and can be enabled individually or in any combination.
+- **Optional Custom Model Costs:** Configure input and output token pricing (per 1M tokens) via environment variables.
 - **Multi-Platform Docker Image:** Builds for both `amd64` and `arm64` architectures.
 
 ## Configuration & Environment Variables
@@ -27,6 +28,17 @@ The container can be configured using the following environment variables:
 | `POLL_INTERVAL` | `10` | Interval in seconds between discovery polls. |
 | `DISABLE_DISCOVERY` | `false` | Set to `true` to disable the discovery script and use a static config. |
 | `LITELLM_MASTER_KEY` | `""` | Optional master key for LiteLLM admin APIs. |
+| `DEFAULT_CONTEXT_LENGTH` | `262144` | Fallback context length if the backend does not expose it. |
+| `LITELLM_CALLBACKS` | `""` | Optional comma-separated override of active callbacks (e.g. `langfuse,mlflow,prometheus` or `none`). |
+| `ENABLE_LANGFUSE` | `""` (auto) | Explicitly enable (`true`) or disable (`false`) Langfuse. By default, auto-enables when both `LANGFUSE_PUBLIC_KEY` and `LANGFUSE_SECRET_KEY` are set. |
+| `ENABLE_MLFLOW` | `""` (auto) | Explicitly enable (`true`) or disable (`false`) MLflow. By default, auto-enables when `MLFLOW_TRACKING_URI` is set. |
+| `ENABLE_PROMETHEUS` | `true` | Enable (`true`) or disable (`false`) Prometheus callback and port `9100` exporter. |
+| `MLFLOW_TRACKING_URI` | `""` | Optional MLflow tracking server URI (e.g. `http://mlflow:5000`). Setting this automatically enables the `mlflow` callback. |
+| `MLFLOW_EXPERIMENT_NAME` | `""` | Optional MLflow experiment name where traces will be logged. |
+| `INPUT_COST_PER_1M_TOKENS` | `""` | Optional cost in USD per 1M input tokens (e.g. `0.50`). |
+| `OUTPUT_COST_PER_1M_TOKENS` | `""` | Optional cost in USD per 1M output tokens (e.g. `1.50`). |
+| `INPUT_COST_PER_TOKEN` | `""` | Optional fallback cost in USD per single input token. |
+| `OUTPUT_COST_PER_TOKEN` | `""` | Optional fallback cost in USD per single output token. |
 
 ## Observability
 
@@ -71,6 +83,7 @@ docker run -d \
 
 ## Monitoring & Observability
 
+### Langfuse
 To enable Langfuse tracking, provide the following variables:
 
 ```bash
@@ -81,6 +94,22 @@ docker run -d \
   -e LANGFUSE_SECRET_KEY="sk-lf-..." \
   -e LANGFUSE_HOST="https://cloud.langfuse.com" \
   ghcr.io/gorgon/dev/litellm:latest
+```
+
+### MLflow & Custom Model Costs
+Setting `MLFLOW_TRACKING_URI` automatically activates the `mlflow` callback in LiteLLM. You can also specify optional input/output token costs (per 1M tokens) so that LiteLLM calculates request costs and reports them to MLflow, Langfuse, and Prometheus:
+
+```bash
+docker run -d \
+  --name litellm-proxy \
+  -p 4000:4000 \
+  -e SPARK_URL="http://your-backend:8000/v1/models" \
+  -e VIRTUAL_MODEL_NAME="my-awesome-model" \
+  -e MLFLOW_TRACKING_URI="http://your-mlflow-server:5000" \
+  -e MLFLOW_EXPERIMENT_NAME="LiteLLM-Traces" \
+  -e INPUT_COST_PER_1M_TOKENS="0.50" \
+  -e OUTPUT_COST_PER_1M_TOKENS="1.50" \
+  ghcr.io/mamorett/litellm:latest
 ```
 
 ## CI/CD Workflow

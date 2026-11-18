@@ -1,6 +1,8 @@
 FROM python:3.11-slim
 
-ARG LITELLM_VERSION=1.82.3
+# v1.83.14: versione stabile e sicura post-hardening CI/CD v2 e patch CVE-2026-42208
+# (evita le versioni compromesse 1.82.7, 1.82.8 e 1.107.0 e mantiene compatibilità con langfuse 2.x)
+ARG LITELLM_VERSION=1.83.14
 
 # Dipendenze di sistema
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -13,6 +15,7 @@ RUN pip install --no-cache-dir --upgrade pip
 # Nota: langfuse 3.x ha breaking changes — teniamo 2.x per compatibilità con LiteLLM 1.x
 RUN pip install --no-cache-dir \
     "langfuse>=2.0.0,<3.0.0" \
+    "mlflow>=2.14.0" \
     "litellm[proxy]==${LITELLM_VERSION}" \
     "requests>=2.31.0" \
     "pyyaml>=6.0" \
@@ -35,7 +38,15 @@ ENV SPARK_URL="http://host.docker.internal:8000/v1/models" \
     POLL_INTERVAL="10" \
     BOOT_TIMEOUT="60" \
     DISABLE_DISCOVERY="false" \
-    DEFAULT_CONTEXT_LENGTH="262144"
+    DEFAULT_CONTEXT_LENGTH="262144" \
+    LITELLM_CALLBACKS="" \
+    ENABLE_LANGFUSE="" \
+    ENABLE_MLFLOW="" \
+    ENABLE_PROMETHEUS="true" \
+    MLFLOW_TRACKING_URI="" \
+    MLFLOW_EXPERIMENT_NAME="" \
+    INPUT_COST_PER_1M_TOKENS="" \
+    OUTPUT_COST_PER_1M_TOKENS=""
 
 EXPOSE 4000
 

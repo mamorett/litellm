@@ -80,23 +80,7 @@ else
         if [ "$elapsed" -ge "$BOOT_TIMEOUT" ]; then
             log "WARN: Backend non raggiungibile dopo ${BOOT_TIMEOUT}s."
             log "Scrivo config di fallback — LiteLLM parte comunque."
-            FALLBACK_API_BASE="${SPARK_URL%/models}"
-            cat > "$LITELLM_CONFIG_PATH" <<EOF
-model_list:
-  - model_name: ${VIRTUAL_MODEL_NAME}
-    litellm_params:
-      model: openai/placeholder
-      api_base: ${FALLBACK_API_BASE}
-      api_key: ${LITELLM_API_KEY:-ollama}
-litellm_settings:
-  drop_params: true
-  num_retries: 1
-  request_timeout: 600
-  success_callback:
-    - langfuse
-  failure_callback:
-    - langfuse
-EOF
+            python -c 'import discovery; discovery.write_config_atomic("openai/placeholder", discovery.DEFAULT_CONTEXT)'
             log "Config di fallback scritto. Il discovery sostituirà 'placeholder' appena il backend torna online."
             break
         fi

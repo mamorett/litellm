@@ -42,6 +42,22 @@ LITELLM_PROXY_URL   = os.getenv("LITELLM_PROXY_URL", "http://localhost:4000")
 LITELLM_MASTER_KEY  = os.getenv("LITELLM_MASTER_KEY", "")
 # Context length di fallback quando nessun engine la espone
 DEFAULT_CONTEXT     = int(os.getenv("DEFAULT_CONTEXT_LENGTH", "262144"))
+# Configurazione opzionale dei callback (possono essere usati singolarmente o in qualsiasi combinazione)
+LITELLM_CALLBACKS_RAW  = os.getenv("LITELLM_CALLBACKS", "").strip()
+ENABLE_LANGFUSE_RAW    = os.getenv("ENABLE_LANGFUSE", "").strip().lower()
+ENABLE_MLFLOW_RAW      = os.getenv("ENABLE_MLFLOW", "").strip().lower()
+ENABLE_PROMETHEUS_RAW  = os.getenv("ENABLE_PROMETHEUS", "true").strip().lower()
+# Variabili Langfuse (abilitato automaticamente se entrambe le chiavi sono presenti)
+LANGFUSE_PUBLIC_KEY    = os.getenv("LANGFUSE_PUBLIC_KEY", "").strip()
+LANGFUSE_SECRET_KEY    = os.getenv("LANGFUSE_SECRET_KEY", "").strip()
+# Variabili MLflow (abilitato automaticamente se MLFLOW_TRACKING_URI è impostata)
+MLFLOW_TRACKING_URI    = os.getenv("MLFLOW_TRACKING_URI", "").strip()
+MLFLOW_EXPERIMENT_NAME = os.getenv("MLFLOW_EXPERIMENT_NAME", "").strip()
+# Costi opzionali del modello (in USD per 1M token, oppure per singolo token come fallback)
+INPUT_COST_PER_1M_RAW  = os.getenv("INPUT_COST_PER_1M_TOKENS", "").strip()
+OUTPUT_COST_PER_1M_RAW = os.getenv("OUTPUT_COST_PER_1M_TOKENS", "").strip()
+INPUT_COST_RAW         = os.getenv("INPUT_COST_PER_TOKEN", "").strip()
+OUTPUT_COST_RAW        = os.getenv("OUTPUT_COST_PER_TOKEN", "").strip()
 
 def _derive_api_base(models_url: str) -> str:
     """http://host:8000/v1/models  ->  http://host:8000/v1"""
@@ -179,42 +195,118 @@ def detect_context_length(model_data: dict, model_id: str) -> int:
     return DEFAULT_CONTEXT
 
 # ---------------------------------------------------------------------------
-# Helper: costruisce i litellm_params con langfuse_model_name top-level
+# Helper: parsing costi modello e callback attivi
 # ---------------------------------------------------------------------------
+def _parse_cost(raw_per_1m: str, raw_per_token: str, label: str) -> float | None:
+    """
+    Converte il costo da INPUT/OUTPUT_COST_PER_1M_TOKENS (dividendo per 1_000_000)
+    oppure da INPUT/OUTPUT_COST_PER_TOKEN come fallback.
+    """
+    if raw_per_1m:
+        try:
+            return float(raw_per_1m) / 1_000_000.0
+        except ValueError:
+            warn(f"Valore non valido per {label}_COST_PER_1M_TOKENS={raw_per_1m!r}, ignorato.")
+    if raw_per_token:
+        try:
+            return float(raw_per_token)
+        except ValueError:
+            warn(f"Valore non valido per {label}_COST_PER_TOKEN={raw_per_token!r}, ignorato.")
+    return None
+
+INPUT_COST_PER_TOKEN  = _parse_cost(INPUT_COST_PER_1M_RAW, INPUT_COST_RAW, "INPUT")
+OUTPUT_COST_PER_TOKEN = _parse_cost(OUTPUT_COST_PER_1M_RAW, OUTPUT_COST_RAW, "OUTPUT")
+
+
+def _active_callbacks() -> list[str]:
+    """
+    Ritorna la lista di callback attivi (langfuse, mlflow, prometheus).
+    Tutti e tre sono opzionali e combinabili liberamente:
+      - LITELLM_CALLBACKS: se impostata (es. "mlflow,prometheus" o "none"), ha priorità assoluta
+      - langfuse:   attivo se ENABLE_LANGFUSE=true oppure (ENABLE_LANGFUSE != false e LANGFUSE_PUBLIC_KEY + LANGFUSE_SECRET_KEY presenti)
+      - mlflow:     attivo se ENABLE_MLFLOW=true oppure (ENABLE_MLFLOW != false e MLFLOW_TRACKING_URI presente)
+      - prometheus: attivo se ENABLE_PROMETHEUS=true (default: true; disattivabile con ENABLE_PROMETHEUS=false)
+    """
+    if LITELLM_CALLBACKS_RAW:
+        if LITELLM_CALLBACKS_RAW.lower() in ("none", "off", "false"):
+            return []
+        return [cb.strip() for cb in LITELLM_CALLBACKS_RAW.split(",") if cb.strip()]
+
+    callbacks: list[str] = []
+
+    langfuse_on = (
+        ENABLE_LANGFUSE_RAW == "true"
+        or (ENABLE_LANGFUSE_RAW != "false" and bool(LANGFUSE_PUBLIC_KEY and LANGFUSE_SECRET_KEY))
+    )
+    if langfuse_on:
+        callbacks.append("langfuse")
+
+    mlflow_on = (
+        ENABLE_MLFLOW_RAW == "true"
+        or (ENABLE_MLFLOW_RAW != "false" and bool(MLFLOW_TRACKING_URI))
+    )
+    if mlflow_on:
+        callbacks.append("mlflow")
+
+    prometheus_on = ENABLE_PROMETHEUS_RAW not in ("false", "0", "no", "off")
+    if prometheus_on:
+        callbacks.append("prometheus")
+
+    return callbacks
+
+
 def _litellm_params(real_model_name: str) -> dict:
-    return {
+    params: dict = {
         "model": real_model_name,         # nome puro, senza prefisso openai/
         "custom_llm_provider": "openai",  # routing verso backend OpenAI-compatibile
         "api_base": API_BASE,
         "api_key": BACKEND_API_KEY,
     }
+    if INPUT_COST_PER_TOKEN is not None:
+        params["input_cost_per_token"] = INPUT_COST_PER_TOKEN
+    if OUTPUT_COST_PER_TOKEN is not None:
+        params["output_cost_per_token"] = OUTPUT_COST_PER_TOKEN
+    return params
+
+
+def _model_info(real_model_name: str, max_ctx: int) -> dict:
+    model_info: dict = {
+        "base_model": real_model_name,
+        "max_input_tokens": max_ctx,
+        "max_tokens": max_ctx,
+        "max_model_len": max_ctx,    # esposto in /v1/models ai client
+        "context_window": max_ctx,   # letto da alcuni client (es. Open WebUI)
+    }
+    if INPUT_COST_PER_TOKEN is not None:
+        model_info["input_cost_per_token"] = INPUT_COST_PER_TOKEN
+    if OUTPUT_COST_PER_TOKEN is not None:
+        model_info["output_cost_per_token"] = OUTPUT_COST_PER_TOKEN
+    return model_info
+
 
 # ---------------------------------------------------------------------------
-# Scrittura atomica del config su disco (usata solo al boot)
+# Scrittura atomica del config su disco (usata al boot e per restart controllato)
 # ---------------------------------------------------------------------------
 def _build_config(real_model_name: str, max_ctx: int) -> dict:
+    callbacks = _active_callbacks()
+    litellm_settings: dict = {
+        "drop_params": True,
+        "num_retries": 1,
+        "request_timeout": 600,
+        "stream_timeout": 600,
+    }
+    if callbacks:
+        litellm_settings["success_callback"] = list(callbacks)
+        litellm_settings["failure_callback"] = list(callbacks)
     return {
         "model_list": [
             {
                 "model_name": VIRTUAL_MODEL,
                 "litellm_params": _litellm_params(real_model_name),
-                "model_info": {
-                    "base_model": real_model_name,
-                    "max_input_tokens": max_ctx,
-                    "max_tokens": max_ctx,
-                    "max_model_len": max_ctx,
-                    "context_window": max_ctx,
-                },
+                "model_info": _model_info(real_model_name, max_ctx),
             }
         ],
-        "litellm_settings": {
-            "success_callback": ["langfuse", "prometheus"],
-            "failure_callback": ["langfuse", "prometheus"],
-            "drop_params": True,
-            "num_retries": 1,
-            "request_timeout": 600,
-            "stream_timeout": 600,
-        },
+        "litellm_settings": litellm_settings,
     }
 
 def write_config_atomic(real_model_name: str, max_ctx: int):
@@ -350,17 +442,11 @@ def update_model_live(new_real_model: str, max_ctx: int) -> bool:
     else:
         info("Model ID non trovato nel proxy, salto la DELETE.")
 
-    # 2. Registra il nuovo modello con context length
+    # 2. Registra il nuovo modello con context length e costi opzionali
     payload = {
         "model_name": VIRTUAL_MODEL,
         "litellm_params": _litellm_params(new_real_model),
-        "model_info": {
-            "base_model": new_real_model,
-            "max_input_tokens": max_ctx,
-            "max_tokens": max_ctx,
-            "max_model_len": max_ctx,    # esposto in /v1/models ai client
-            "context_window": max_ctx,   # letto da alcuni client (es. Open WebUI)
-        },
+        "model_info": _model_info(new_real_model, max_ctx),
     }
     try:
         r = requests.post(
@@ -480,10 +566,22 @@ def main():
     info(f"LiteLLM proxy URL:        {LITELLM_PROXY_URL}")
     info(f"Poll interval:            {POLL_INTERVAL}s")
     info(f"Default context fallback: {DEFAULT_CONTEXT}")
+    info(f"Callbacks attivi:         {_active_callbacks()}")
+    if MLFLOW_TRACKING_URI:
+        exp_info = f", experiment={MLFLOW_EXPERIMENT_NAME!r}" if MLFLOW_EXPERIMENT_NAME else ""
+        info(f"MLflow abilitato:         uri={MLFLOW_TRACKING_URI!r}{exp_info}")
+    if INPUT_COST_PER_TOKEN is not None or OUTPUT_COST_PER_TOKEN is not None:
+        in_str  = f"${INPUT_COST_PER_TOKEN * 1_000_000:.4f}/1M" if INPUT_COST_PER_TOKEN is not None else "n/a"
+        out_str = f"${OUTPUT_COST_PER_TOKEN * 1_000_000:.4f}/1M" if OUTPUT_COST_PER_TOKEN is not None else "n/a"
+        info(f"Costi modello configurati: input={in_str}, output={out_str}")
 
-    # Start Prometheus metrics server
-    start_http_server(9100)
-    info("Prometheus metrics esposte sulla porta 9100")
+    # Start Prometheus metrics server if enabled
+    active_cbs = _active_callbacks()
+    if "prometheus" in active_cbs:
+        start_http_server(9100)
+        info("Prometheus metrics esposte sulla porta 9100")
+    else:
+        info("Prometheus disabilitato (ENABLE_PROMETHEUS=false)")
 
     last_model: str | None = None
     last_ctx: int = 0
