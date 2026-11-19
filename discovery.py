@@ -17,7 +17,6 @@ Context length detection (cascata):
 """
 
 import os
-import shutil
 import sys
 import time
 import signal
@@ -292,30 +291,17 @@ def _model_info(real_model_name: str, max_ctx: int) -> dict:
 # ---------------------------------------------------------------------------
 # Scrittura atomica del config su disco (usata al boot e per restart controllato)
 # ---------------------------------------------------------------------------
-def _ensure_mlflow_callback_file(config_dir: str) -> None:
-    """Copia mlflow_callback.py accanto a config.yaml così LiteLLM lo trova via get_instance_fn."""
-    src = os.path.join(os.path.dirname(os.path.abspath(__file__)), "mlflow_callback.py")
-    dst = os.path.join(config_dir, "mlflow_callback.py")
-    if os.path.abspath(src) != os.path.abspath(dst) and os.path.exists(src):
-        shutil.copy2(src, dst)
-
-
 def _build_config(real_model_name: str, max_ctx: int) -> dict:
     callbacks = _active_callbacks()
-    resolved_cbs = [
-        "mlflow_callback.mlflow_logger" if cb == "mlflow" else cb
-        for cb in callbacks
-    ]
-
     litellm_settings: dict = {
         "drop_params": True,
         "num_retries": 1,
         "request_timeout": 600,
         "stream_timeout": 600,
     }
-    if resolved_cbs:
-        litellm_settings["success_callback"] = list(resolved_cbs)
-        litellm_settings["failure_callback"] = list(resolved_cbs)
+    if callbacks:
+        litellm_settings["success_callback"] = list(callbacks)
+        litellm_settings["failure_callback"] = list(callbacks)
     return {
         "model_list": [
             {
@@ -331,8 +317,6 @@ def write_config_atomic(real_model_name: str, max_ctx: int):
     config = _build_config(real_model_name, max_ctx)
     config_dir = os.path.dirname(os.path.abspath(CONFIG_PATH))
     os.makedirs(config_dir, exist_ok=True)
-    if "mlflow" in _active_callbacks():
-        _ensure_mlflow_callback_file(config_dir)
     fd, tmp_path = tempfile.mkstemp(dir=config_dir, suffix=".yaml.tmp")
     try:
         with os.fdopen(fd, "w") as f:

@@ -26,9 +26,8 @@ RUN pip install --no-cache-dir \
 RUN mkdir -p /app /config
 WORKDIR /app
 
-COPY discovery.py       /app/discovery.py
-COPY mlflow_callback.py /app/mlflow_callback.py
-COPY entrypoint.sh      /app/entrypoint.sh
+COPY discovery.py   /app/discovery.py
+COPY entrypoint.sh  /app/entrypoint.sh
 RUN chmod +x /app/entrypoint.sh
 
 # Variabili d'ambiente con default ragionevoli

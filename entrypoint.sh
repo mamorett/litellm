@@ -13,15 +13,7 @@ log() {
 CONFIG_DIR=$(dirname "$LITELLM_CONFIG_PATH")
 mkdir -p "$CONFIG_DIR"
 
-# Keep custom MLflow callback in sync with /app beside config.yaml
-if [ -f /app/mlflow_callback.py ]; then
-    cp -f /app/mlflow_callback.py "$CONFIG_DIR/mlflow_callback.py"
-fi
-
-# Ensure /app is on PYTHONPATH so LiteLLM's get_instance_fn can import mlflow_callback
-export PYTHONPATH="/app:${PYTHONPATH:-}"
-
-# Ensure MLFLOW_TRACKING_INSECURE_TLS is never an empty string (MLflow raises ValueError on "")
+# Default MLFLOW_TRACKING_INSECURE_TLS to "false" so empty string does not fail MLflow's boolean parser
 if [ -z "${MLFLOW_TRACKING_INSECURE_TLS:-}" ]; then
     export MLFLOW_TRACKING_INSECURE_TLS="false"
 fi
