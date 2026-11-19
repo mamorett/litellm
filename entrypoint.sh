@@ -13,6 +13,11 @@ log() {
 CONFIG_DIR=$(dirname "$LITELLM_CONFIG_PATH")
 mkdir -p "$CONFIG_DIR"
 
+# Ensure MLFLOW_TRACKING_INSECURE_TLS is never an empty string (MLflow raises ValueError on "")
+if [ -z "${MLFLOW_TRACKING_INSECURE_TLS:-}" ]; then
+    export MLFLOW_TRACKING_INSECURE_TLS="false"
+fi
+
 if [ "${DISABLE_DISCOVERY:-false}" = "true" ]; then
     log "Discovery disabilitato (DISABLE_DISCOVERY=true)."
     if [ ! -f "$LITELLM_CONFIG_PATH" ]; then

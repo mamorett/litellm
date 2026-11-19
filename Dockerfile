@@ -26,8 +26,9 @@ RUN pip install --no-cache-dir \
 RUN mkdir -p /app /config
 WORKDIR /app
 
-COPY discovery.py   /app/discovery.py
-COPY entrypoint.sh  /app/entrypoint.sh
+COPY discovery.py       /app/discovery.py
+COPY mlflow_callback.py /app/mlflow_callback.py
+COPY entrypoint.sh      /app/entrypoint.sh
 RUN chmod +x /app/entrypoint.sh
 
 # Variabili d'ambiente con default ragionevoli
@@ -48,7 +49,7 @@ ENV SPARK_URL="http://host.docker.internal:8000/v1/models" \
     MLFLOW_TRACKING_USERNAME="" \
     MLFLOW_TRACKING_PASSWORD="" \
     MLFLOW_TRACKING_TOKEN="" \
-    MLFLOW_TRACKING_INSECURE_TLS="" \
+    MLFLOW_TRACKING_INSECURE_TLS="false" \
     INPUT_COST_PER_1M_TOKENS="" \
     OUTPUT_COST_PER_1M_TOKENS=""
 

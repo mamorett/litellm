@@ -17,6 +17,7 @@ Context length detection (cascata):
 """
 
 import os
+import shutil
 import sys
 import time
 import signal
@@ -56,7 +57,7 @@ MLFLOW_EXPERIMENT_NAME       = os.getenv("MLFLOW_EXPERIMENT_NAME", "").strip()
 MLFLOW_TRACKING_USERNAME     = os.getenv("MLFLOW_TRACKING_USERNAME", "").strip()
 MLFLOW_TRACKING_PASSWORD     = os.getenv("MLFLOW_TRACKING_PASSWORD", "").strip()
 MLFLOW_TRACKING_TOKEN        = os.getenv("MLFLOW_TRACKING_TOKEN", "").strip()
-MLFLOW_TRACKING_INSECURE_TLS = os.getenv("MLFLOW_TRACKING_INSECURE_TLS", "").strip().lower()
+MLFLOW_TRACKING_INSECURE_TLS = os.getenv("MLFLOW_TRACKING_INSECURE_TLS", "false").strip().lower() or "false"
 # Costi opzionali del modello (in USD per 1M token, oppure per singolo token come fallback)
 INPUT_COST_PER_1M_RAW  = os.getenv("INPUT_COST_PER_1M_TOKENS", "").strip()
 OUTPUT_COST_PER_1M_RAW = os.getenv("OUTPUT_COST_PER_1M_TOKENS", "").strip()
@@ -291,17 +292,30 @@ def _model_info(real_model_name: str, max_ctx: int) -> dict:
 # ---------------------------------------------------------------------------
 # Scrittura atomica del config su disco (usata al boot e per restart controllato)
 # ---------------------------------------------------------------------------
+def _ensure_mlflow_callback_file(config_dir: str) -> None:
+    """Copia mlflow_callback.py accanto a config.yaml così LiteLLM lo trova via get_instance_fn."""
+    src = os.path.join(os.path.dirname(os.path.abspath(__file__)), "mlflow_callback.py")
+    dst = os.path.join(config_dir, "mlflow_callback.py")
+    if os.path.abspath(src) != os.path.abspath(dst) and os.path.exists(src):
+        shutil.copy2(src, dst)
+
+
 def _build_config(real_model_name: str, max_ctx: int) -> dict:
     callbacks = _active_callbacks()
+    standard_cbs = [cb for cb in callbacks if cb != "mlflow"]
+    custom_cbs = ["mlflow_callback.mlflow_logger"] if "mlflow" in callbacks else []
+
     litellm_settings: dict = {
         "drop_params": True,
         "num_retries": 1,
         "request_timeout": 600,
         "stream_timeout": 600,
     }
-    if callbacks:
-        litellm_settings["success_callback"] = list(callbacks)
-        litellm_settings["failure_callback"] = list(callbacks)
+    if standard_cbs:
+        litellm_settings["success_callback"] = list(standard_cbs)
+        litellm_settings["failure_callback"] = list(standard_cbs)
+    if custom_cbs:
+        litellm_settings["callbacks"] = list(custom_cbs)
     return {
         "model_list": [
             {
@@ -317,6 +331,8 @@ def write_config_atomic(real_model_name: str, max_ctx: int):
     config = _build_config(real_model_name, max_ctx)
     config_dir = os.path.dirname(os.path.abspath(CONFIG_PATH))
     os.makedirs(config_dir, exist_ok=True)
+    if "mlflow" in _active_callbacks():
+        _ensure_mlflow_callback_file(config_dir)
     fd, tmp_path = tempfile.mkstemp(dir=config_dir, suffix=".yaml.tmp")
     try:
         with os.fdopen(fd, "w") as f:

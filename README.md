@@ -38,7 +38,7 @@ The container can be configured using the following environment variables:
 | `MLFLOW_TRACKING_USERNAME` | `""` | Optional username for MLflow HTTP Basic Authentication. |
 | `MLFLOW_TRACKING_PASSWORD` | `""` | Optional password for MLflow HTTP Basic Authentication. |
 | `MLFLOW_TRACKING_TOKEN` | `""` | Optional Bearer token for MLflow token-based authentication. |
-| `MLFLOW_TRACKING_INSECURE_TLS` | `""` | Set to `true` to skip TLS certificate verification for self-signed MLflow servers. |
+| `MLFLOW_TRACKING_INSECURE_TLS` | `false` | Optional. Set to `true` to skip TLS certificate verification for self-signed MLflow servers (defaults to `false`, verifying TLS). |
 | `INPUT_COST_PER_1M_TOKENS` | `""` | Optional cost in USD per 1M input tokens (e.g. `0.50`). |
 | `OUTPUT_COST_PER_1M_TOKENS` | `""` | Optional cost in USD per 1M output tokens (e.g. `1.50`). |
 | `INPUT_COST_PER_TOKEN` | `""` | Optional fallback cost in USD per single input token. |
