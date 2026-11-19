@@ -90,6 +90,18 @@ class CustomMlflowLogger(MlflowLogger):
             "OUTPUT_COST_PER_1M_TOKENS", "OUTPUT_COST_PER_TOKEN"
         )
         self._span_id_to_real_model: dict[str, str] = {}
+        print(
+            f"[MLflow Callback] CustomMlflowLogger initialized "
+            f"(uri={os.getenv('MLFLOW_TRACKING_URI')!r}, "
+            f"input_cost_per_token={self._input_cost_per_token}, "
+            f"output_cost_per_token={self._output_cost_per_token})",
+            flush=True,
+        )
+
+    async def __call__(self, *args, **kwargs):
+        # Required so LiteLLM's coroutine_checker.is_async_callable() routes this
+        # CustomLogger instance to litellm._async_success_callback / _async_failure_callback.
+        return None
 
     def _compute_cost(
         self, kwargs: dict, response_obj: Any = None
@@ -163,6 +175,18 @@ class CustomMlflowLogger(MlflowLogger):
 
     def log_stream_event(self, kwargs, response_obj, start_time, end_time):
         self.log_success_event(kwargs, response_obj, start_time, end_time)
+
+    def _handle_success(self, kwargs, response_obj, start_time, end_time):
+        try:
+            super()._handle_success(kwargs, response_obj, start_time, end_time)
+        except Exception as e:
+            print(f"[MLflow Callback] ERROR in _handle_success: {e}", flush=True)
+
+    def _handle_failure(self, kwargs, response_obj, start_time, end_time):
+        try:
+            super()._handle_failure(kwargs, response_obj, start_time, end_time)
+        except Exception as e:
+            print(f"[MLflow Callback] ERROR in _handle_failure: {e}", flush=True)
 
     def _start_span_or_trace(self, kwargs, start_time):
         span = super()._start_span_or_trace(kwargs, start_time)
