@@ -302,8 +302,10 @@ def _ensure_mlflow_callback_file(config_dir: str) -> None:
 
 def _build_config(real_model_name: str, max_ctx: int) -> dict:
     callbacks = _active_callbacks()
-    standard_cbs = [cb for cb in callbacks if cb != "mlflow"]
-    custom_cbs = ["mlflow_callback.mlflow_logger"] if "mlflow" in callbacks else []
+    resolved_cbs = [
+        "mlflow_callback.mlflow_logger" if cb == "mlflow" else cb
+        for cb in callbacks
+    ]
 
     litellm_settings: dict = {
         "drop_params": True,
@@ -311,11 +313,9 @@ def _build_config(real_model_name: str, max_ctx: int) -> dict:
         "request_timeout": 600,
         "stream_timeout": 600,
     }
-    if standard_cbs:
-        litellm_settings["success_callback"] = list(standard_cbs)
-        litellm_settings["failure_callback"] = list(standard_cbs)
-    if custom_cbs:
-        litellm_settings["callbacks"] = list(custom_cbs)
+    if resolved_cbs:
+        litellm_settings["success_callback"] = list(resolved_cbs)
+        litellm_settings["failure_callback"] = list(resolved_cbs)
     return {
         "model_list": [
             {

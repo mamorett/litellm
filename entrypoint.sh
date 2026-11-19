@@ -18,6 +18,9 @@ if [ -f /app/mlflow_callback.py ]; then
     cp -f /app/mlflow_callback.py "$CONFIG_DIR/mlflow_callback.py"
 fi
 
+# Ensure /app is on PYTHONPATH so LiteLLM's get_instance_fn can import mlflow_callback
+export PYTHONPATH="/app:${PYTHONPATH:-}"
+
 # Ensure MLFLOW_TRACKING_INSECURE_TLS is never an empty string (MLflow raises ValueError on "")
 if [ -z "${MLFLOW_TRACKING_INSECURE_TLS:-}" ]; then
     export MLFLOW_TRACKING_INSECURE_TLS="false"
