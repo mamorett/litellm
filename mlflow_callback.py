@@ -158,6 +158,12 @@ class CustomMlflowLogger(MlflowLogger):
 
         return attributes
 
+    async def async_log_stream_event(self, kwargs, response_obj, start_time, end_time):
+        await self.async_log_success_event(kwargs, response_obj, start_time, end_time)
+
+    def log_stream_event(self, kwargs, response_obj, start_time, end_time):
+        self.log_success_event(kwargs, response_obj, start_time, end_time)
+
     def _start_span_or_trace(self, kwargs, start_time):
         span = super()._start_span_or_trace(kwargs, start_time)
         real_model = _resolve_real_model(kwargs)
@@ -170,10 +176,13 @@ class CustomMlflowLogger(MlflowLogger):
         super()._extract_and_set_chat_attributes(span, kwargs, response_obj)
         if span is None:
             return
-        cost_info = self._compute_cost(kwargs, response_obj)
-        if cost_info is not None:
-            span.set_attribute("mlflow.llm.cost", cost_info)
-            span.set_attribute("response_cost", cost_info["total_cost"])
+        try:
+            cost_info = self._compute_cost(kwargs, response_obj)
+            if cost_info is not None:
+                span.set_attribute("mlflow.llm.cost", cost_info)
+                span.set_attribute("response_cost", cost_info["total_cost"])
+        except Exception:
+            pass
 
     def _end_span_or_trace(self, span, outputs, end_time_ns, status):
         real_model = None
