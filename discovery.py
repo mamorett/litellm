@@ -293,6 +293,14 @@ def _model_info(real_model_name: str, max_ctx: int) -> dict:
 # ---------------------------------------------------------------------------
 def _build_config(real_model_name: str, max_ctx: int) -> dict:
     callbacks = _active_callbacks()
+    success_cbs = [
+        "mlflow_callback.log_mlflow_success" if cb == "mlflow" else cb
+        for cb in callbacks
+    ]
+    failure_cbs = [
+        "mlflow_callback.log_mlflow_failure" if cb == "mlflow" else cb
+        for cb in callbacks
+    ]
     litellm_settings: dict = {
         "drop_params": True,
         "num_retries": 1,
@@ -300,8 +308,8 @@ def _build_config(real_model_name: str, max_ctx: int) -> dict:
         "stream_timeout": 600,
     }
     if callbacks:
-        litellm_settings["success_callback"] = list(callbacks)
-        litellm_settings["failure_callback"] = list(callbacks)
+        litellm_settings["success_callback"] = success_cbs
+        litellm_settings["failure_callback"] = failure_cbs
     return {
         "model_list": [
             {

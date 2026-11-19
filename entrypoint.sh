@@ -13,6 +13,9 @@ log() {
 CONFIG_DIR=$(dirname "$LITELLM_CONFIG_PATH")
 mkdir -p "$CONFIG_DIR"
 
+# Ensure /app is on PYTHONPATH so LiteLLM's get_instance_fn can import mlflow_callback
+export PYTHONPATH="/app:${PYTHONPATH:-}"
+
 # Default MLFLOW_TRACKING_INSECURE_TLS to "false" so empty string does not fail MLflow's boolean parser
 if [ -z "${MLFLOW_TRACKING_INSECURE_TLS:-}" ]; then
     export MLFLOW_TRACKING_INSECURE_TLS="false"
@@ -67,6 +70,11 @@ start_discovery
 #    Niente più restart loop per backend temporaneamente giù.
 # ---------------------------------------------------------------------------
 BOOT_TIMEOUT="${BOOT_TIMEOUT:-60}"
+
+if [ -f "$LITELLM_CONFIG_PATH" ] && grep -qE '^[[:space:]]*-[[:space:]]*mlflow[[:space:]]*$' "$LITELLM_CONFIG_PATH"; then
+    log "Config esistente usa il vecchio callback 'mlflow', rigenero..."
+    rm -f "$LITELLM_CONFIG_PATH"
+fi
 
 if [ -f "$LITELLM_CONFIG_PATH" ]; then
     log "Config esistente trovato, avvio immediato di LiteLLM."
